@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from scipy.spatial import distance_matrix
+from sklearn import preprocessing
 from pylab import *
 import os.path
 import os
@@ -91,7 +92,7 @@ def splitPos(df_stats, all_df, json_files):
         # add length column
         df_split['len'] = np.sqrt(np.power(df_split['xhead'] - df_split['xtail'], 2) + np.power(df_split['yhead']- df_split['ytail'], 2))
 
-        df_split['pol_rad'] = np.arctan2((df_split['yhead']- df_split['ytail']), (df_split['xhead'] - df_split['xtail']))
+        df_split['dir_rad'] = np.arctan2((df_split['yhead']- df_split['ytail']), (df_split['xhead'] - df_split['xtail']))
         #print(df_split.head(1))
 
         df_allsplit.append(df_split)
@@ -404,3 +405,68 @@ def calc_same_class_nb_p_and_avg_number_nb(df_allsplit, df_stats):
     df_stats["av4_avg_n_f3"] = av4_avg_f3f3_n
 
     return df_stats
+
+def calc_polarization(df):
+    
+    df_head = df[['xhead', 'yhead']]
+    df_tail = df[['xtail', 'ytail']]
+
+    df_head = df_head.rename(columns={"xhead": "x", "yhead": "y"})
+    df_tail = df_tail.rename(columns={"xtail": "x", "ytail": "y"})
+
+    # center the fish voctors around 0,0
+    df_zeroed = df_head - df_tail
+
+    # get unit vectors
+    zeroed = df_zeroed.values
+    unitv = preprocessing.normalize(zeroed, norm='l2')
+
+    # mean of unit vectors
+    mean_uv = np.mean(unitv, axis=0)
+
+    # magnitude of mean = polarization
+    pol = np.linalg.norm(mean_uv)
+
+    # add pol error to df_stats
+    pol_error = 1/np.sqrt(len(zeroed)) # rough estimate of error
+    
+    return pol, pol_error
+
+def pop_stats_pol_dir_len(df_allsplit, df_stats):
+    all_avg_len = []
+    all_avg_dir = []
+    all_pol = []
+    all_pol_error = []
+    for idf, df_split in enumerate(tqdm_notebook(df_allsplit)):
+        all_avg_len.append(df_split['len'].mean())
+
+        #dir
+        msin = np.mean(np.sin(df_split['dir_rad']))
+        mcos = np.mean(np.cos(df_split['dir_rad']))
+        avg_dir= np.arctan2(msin,mcos)
+        all_avg_dir.append(avg_dir)
+
+        #pol
+        pol, pol_error = calc_polarization(df_split)
+        all_pol.append(pol)
+        all_pol_error.append(pol_error)
+
+    assert(len(all_avg_len) == df_stats.shape[0])
+    df_stats["avg_len"] = all_avg_len
+    df_stats["avg_dir_rad"] = all_avg_dir
+    df_stats["pol"] = all_pol
+    df_stats["pol_error"] = all_pol_error
+    
+    return df_stats
+
+def neighbour_calculations(df_allsplit, df_stats, json_files):
+    # calculate neighbors for all datasets
+    df_allsplit = calc_all_neighbors(df_allsplit, json_files)
+
+    # calc class neighbors for all datasets
+    df_allsplit = all_calc_class_neighbours(df_allsplit)
+
+    # add same class neighbors percentage and average number of neighbors (per class and total) to stats
+    df_stats = calc_same_class_nb_p_and_avg_number_nb(df_allsplit, df_stats)
+    
+    return df_allsplit, df_stats
