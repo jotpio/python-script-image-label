@@ -15,13 +15,17 @@ import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 #### Load sloth json into pandas dataframe
-def loadJSONintoDF(filepath):
+def loadJSONintoDF(filepath, filename):
     assert (os.path.isfile(filepath)) # check if file path exists
-    
+    print(f"Loading: {filepath}")
     loaded_jsons = json.load( open(filepath, 'r') )
     assert (len(loaded_jsons) == 1), f"More than on annotated image was found in json file: {filepath}" #there must be a 1:1 mapping of json-files and images
     annos = loaded_jsons[0]['annotations']
     df = pd.DataFrame(annos)
+    df.img = loaded_jsons[0]['filename']
+    df.number = loaded_jsons[0]['filename'][-8:-4]
+    df.json = filename
+#     print(df.number)
     return df
 #### Load all sloth jsons into array of pandas dataframes
 def loadAllJSONSFromPath(datapath):
@@ -32,7 +36,7 @@ def loadAllJSONSFromPath(datapath):
     
     for filename in json_files:
         #df_stats = df_stats.append({'filename' : filename} , ignore_index=True)
-        all_df.append(loadJSONintoDF(datapath + filename))
+        all_df.append(loadJSONintoDF(datapath + filename, filename))
     df_stats = pd.DataFrame(0, index=json_files, columns=['Ntags_f1', 'Ntags_f2', 'Ntags_f3'])
     df_stats['Ntags_f1'] = 0
     df_stats['Ntags_f2'] = 0
@@ -76,33 +80,42 @@ def splitPos(df_stats, all_df, json_files):
 
     for df in all_df:
         df_split = df.copy()
-
+        df_split.img = df.img
+        df_split.number = df.number
+        df_split.json = df.json
+        
         xn = np.array([ np.array(xn.split(';'), dtype=float) for xn in df['xn']])
         df_split['xhead'] = pd.Series( xn[:, 0] )
         df_split['xtail'] = pd.Series( xn[:, 1] )
         yn = np.array([ np.array(yn.split(';'), dtype=float) for yn in df['yn']])
         df_split['yhead'] = pd.Series( yn[:, 0] )
         df_split['ytail'] = pd.Series( yn[:, 1] )
-
+        
         if 'xn' in df_split.columns and 'yn' in df_split.columns:
-            df_split = df_split.drop(['xn', 'yn'], axis = 1)
-
+            df_split.drop(['xn', 'yn'], axis = 1, inplace=True)
+            
         # add average position ((pos_head + pos_tail) / 2) column
         df_split['x_av'] = (df_split['xhead'] + df_split['xtail']) / 2
         df_split['y_av'] = (df_split['yhead'] + df_split['ytail']) / 2
+        
+        
 
         # add length column
         df_split['len'] = np.sqrt(np.power(df_split['xhead'] - df_split['xtail'], 2) + np.power(df_split['yhead']- df_split['ytail'], 2))
 
         df_split['dir_rad'] = np.arctan2((df_split['yhead']- df_split['ytail']), (df_split['xhead'] - df_split['xtail']))
         #print(df_split.head(1))
+        
+#         print(df_split.number)
 
         df_allsplit.append(df_split)
+        
+        
     assert(len(df_allsplit) == len(json_files))
     
     return df_allsplit
 
-def calc_neighbors(df_split, number):
+def calc_neighbors(df_split):
     df_pos_av = df_split[['x_av', 'y_av']]
 
     dist_m = distance_matrix(df_pos_av, df_pos_av)
@@ -140,10 +153,9 @@ def calc_neighbors(df_split, number):
         avg_lenght_f2 = df_class_group_length["fish_2"]
         dist_2_f2_BL = avg_lenght_f2 * 2
     
-    print(f"{number}:   total avg 2BL: {dist2BL:.5f} , total avg 4BL: {dist4BL:.5f}, f1 avg 2BL: {dist_2_f1_BL}, f2 avg 2BL: {dist_2_f2_BL} ")
+    print(f"{df_split.number}:   total avg 2BL: {dist2BL:.5f} , total avg 4BL: {dist4BL:.5f}, f1 avg 2BL: {dist_2_f1_BL:.5f}, f2 avg 2BL: {dist_2_f2_BL:.5f} ")
 
-    
-    
+
     
     #neighbors in distance total BL2
     df_dist_m_2 = df_dist_m[df_dist_m < dist2BL]
@@ -164,9 +176,6 @@ def calc_neighbors(df_split, number):
         
     assert(len(np_neighbors2) == df_split.shape[0])
     df_split['nb_av2'] = np_neighbors2
-
-   
-
 
     #neighbors in distance total BL4
     df_dist_m_4 = df_dist_m[df_dist_m < dist4BL]
@@ -210,9 +219,6 @@ def calc_neighbors(df_split, number):
     df_split['nb_f1BL2'] = np_neighbors2f1BL
     
     
-    
-    
-    
     #neighbors in distance fish2 BL2
     
     df_dist_m_2f2BL = df_dist_m[df_dist_m < dist_2_f2_BL]
@@ -231,38 +237,37 @@ def calc_neighbors(df_split, number):
     assert(len(np_neighbors2f2BL) == df_split.shape[0])
     df_split['nb_f2BL2'] = np_neighbors2f2BL
     
-    
-    
-    
-    
+
     return df_split
     
-def calc_all_neighbors(df_allsplit, json_files):
+def calc_all_neighbors(df_allsplit, json_files, all_imgdir):
     
     #get all numbers
     data_numbers = []
-    for json in json_files:
-        imgpath, number = get_imgpath_for_json(json)
-        data_numbers.append(number)
+#     for json in json_files:
+#         imgpath, number = get_imgpath_for_json(json, all_imgdir)
+        
+#         data_numbers.append(number)
         
     for i, df_split in enumerate(tqdm_notebook(df_allsplit)):
-        calc_neighbors(df_split, data_numbers[i])
+        img_number = df_split.number
+        data_numbers.append(img_number)
+        calc_neighbors(df_split)
     return df_allsplit, data_numbers
         
 #### Find path of image linked to json  
 # this only works with this format: IMG_XXXX_annotations_al.json and IMG_XXXX.jpg
-def get_imgpath_for_json(filename):
-    #print(filename)
-    number = filename[4:8]
+def get_imgpath_for_json(filename, all_imgdir):
+    print(f"Searching image for {filename}")
+    number = filename[4:-4]
         
-    all_imgdir = './data/images/'
-    imgfiles = [img_name for img_name in os.listdir(all_imgdir) if img_name.endswith('.jpg')]
+    imgfiles = [img_name for img_name in os.listdir(all_imgdir) if (img_name.endswith('.jpg') or img_name.endswith('.JPG'))]
     found_file = -1
     
     for name in imgfiles:
-        if name[4: -4] == number:
+        if name[-8: -4] == number:
             found_file = name
-    assert(found_file != -1)
+    assert(found_file != -1), f"No image found with number {number} in last 4 digits (...XXXX.jpg)"
     imgpath = all_imgdir + found_file
     assert (os.path.isfile(imgpath))
     
@@ -531,14 +536,14 @@ def nb_stats_calculations(df_allsplit, df_stats):
                 av2_p_f_same += df_split.at[i, "#neighbors_av2_f"] / av2_neighbors_number
                 av2_avg_f_same += df_split.at[i, "#neighbors_av2_f"]
                 
-                _2f1BL_p_f1_same += df_split.at[i, "#neighbors_f1BL2_f"] / _2f1BL_neighbors_number
+                _2f1BL_p_f1_same += (df_split.at[i, "#neighbors_f1BL2_f"] / _2f1BL_neighbors_number) if _2f1BL_neighbors_number != 0 else 0
                 _2f1BL_avg_f1_same += df_split.at[i, "#neighbors_f1BL2_f"]
                 
             elif(c == "fish_2"):
                 av2_p_f2_same += df_split.at[i, "#neighbors_av2_f2"] / av2_neighbors_number
                 av2_avg_f2_same += df_split.at[i, "#neighbors_av2_f2"]
                 
-                _2f2BL_p_f2_same += df_split.at[i, "#neighbors_f2BL2_f2"] / _2f2BL_neighbors_number
+                _2f2BL_p_f2_same += (df_split.at[i, "#neighbors_f2BL2_f2"] / _2f2BL_neighbors_number) if _2f2BL_neighbors_number != 0 else 0
                 _2f2BL_avg_f2_same += df_split.at[i, "#neighbors_f2BL2_f2"]
             elif(c == "fish_3"):
                 av2_p_f3_same += df_split.at[i, "#neighbors_av2_f3"] / av2_neighbors_number
@@ -713,9 +718,9 @@ def pop_stats_pol_dir_len(df_allsplit, df_stats):
     
     return df_stats
 
-def neighbor_calculations(df_allsplit, df_stats, json_files):
+def neighbor_calculations(df_allsplit, df_stats, json_files, all_imgdir):
     # calculate neighbors for all datasets
-    df_allsplit, data_numbers = calc_all_neighbors(df_allsplit, json_files)
+    df_allsplit, data_numbers = calc_all_neighbors(df_allsplit, json_files, all_imgdir)
 
     # calc class neighbors for all datasets
     df_allsplit = all_calc_class_neighbours(df_allsplit)
