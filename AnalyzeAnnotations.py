@@ -8,68 +8,79 @@ import os
 import json 
 import glob
 
-from tqdm import tqdm, tqdm_notebook
 import time
 
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 #### Load sloth json into pandas dataframe
-def loadJSONintoDF(filepath, filename):
-    assert (os.path.isfile(filepath)) # check if file path exists
+def loadJSONintoDF(filepath):
+    assert (os.path.isfile(filepath)), f"File not found: {filepath}" # check if file path exists
     print(f"Loading: {filepath}")
-    loaded_jsons = json.load( open(filepath, 'r') )
-    assert (len(loaded_jsons) == 1), f"More than on annotated image was found in json file: {filepath}" #there must be a 1:1 mapping of json-files and images
-    annos = loaded_jsons[0]['annotations']
-    df = pd.DataFrame(annos)
-    df.img = loaded_jsons[0]['filename']
-    df.number = loaded_jsons[0]['filename'][-8:-4]
-    df.json = filename
-#     print(df.number)
-    return df
+    json_arr = json.load(open(filepath, 'r'))
+           
+    df_all = []
+    imgnames = []
+    for img in json_arr:
+        df_img = pd.DataFrame(img['annotations'])
+        df_img.img = img['filename']
+        df_img.json = filepath
+        imgname = img['filename']
+                
+        df_all.append((imgname, df_img))
+        imgnames.append(imgname)
+        
+    return df_all, imgnames
+
+
 #### Load all sloth jsons into array of pandas dataframes
 def loadAllJSONSFromPath(datapath):
     assert (os.path.isdir(datapath)) # check if datapath is directory
-    json_files = [pos_json for pos_json in os.listdir(datapath) if pos_json.endswith('.json')]
-    
+    json_files = [pos_json for pos_json in os.listdir(datapath) if pos_json.endswith('.json') and not(pos_json.startswith('.'))]
+        
     all_df = []
+    all_imgnames = []
+    
+    print(f"Number of json files to load: {len(json_files)}")
     
     for filename in json_files:
-        #df_stats = df_stats.append({'filename' : filename} , ignore_index=True)
-        all_df.append(loadJSONintoDF(datapath + filename, filename))
-    df_stats = pd.DataFrame(0, index=json_files, columns=['Ntags_f1', 'Ntags_f2', 'Ntags_f3'])
+        dfs, imgnames = loadJSONintoDF(datapath + filename)
+        all_imgnames.extend(imgnames)
+        all_df.extend(dfs)
+        
+    df_stats = pd.DataFrame(0, index=all_imgnames, columns=['Ntags_f1', 'Ntags_f2', 'Ntags_f3'])
     df_stats['Ntags_f1'] = 0
     df_stats['Ntags_f2'] = 0
     df_stats['Ntags_f3'] = 0
     df_stats['Ntags_total'] = 0
-    
-    #print(json_files)
-    
-    return df_stats, all_df, json_files
+
+    return df_stats, all_df, json_files, all_imgnames
 
 def calcNumberOfClassesInAnno(df):
     classes = ['fish', 'fish_2', 'fish_3']
     dfout = pd.DataFrame()
     class_ab = [0,0,0]
     
+    if df.empty: return class_ab
+        
     for i, cla in enumerate(classes):
         class_ab[i] = len( df.loc[df['class'] == cla])
     return class_ab
              
     
 # add number of classes of all files to data statistics
-def getNumberOfClassesInDFs(df_stats, all_df, json_files):
-    for i, df in enumerate(all_df):
-        df_nclasses = calcNumberOfClassesInAnno(df)
-        
-        df_stats.at[json_files[i], 'Ntags_f1'] = df_nclasses[0]
-        df_stats.at[json_files[i], 'Ntags_f2'] = df_nclasses[1]
-        df_stats.at[json_files[i], 'Ntags_f3'] = df_nclasses[2]
-        df_stats.at[json_files[i], 'Ntags_total'] = sum(df_nclasses)
+def getNumberOfClassesInDFs(df_stats, all_df):
+    for df in all_df:
+        df_nclasses = calcNumberOfClassesInAnno(df[1])
+        df_stats.at[df[0], 'Ntags_f1'] = df_nclasses[0]
+        df_stats.at[df[0], 'Ntags_f2'] = df_nclasses[1]
+        df_stats.at[df[0], 'Ntags_f3'] = df_nclasses[2]
+        df_stats.at[df[0], 'Ntags_total'] = sum(df_nclasses)
         
     return df_stats
 
-def splitPos(df_stats, all_df, json_files):
+
+def splitPos(df_stats, all_df, all_imgnames):
     '''
     sloth annotation has xn and yn with
     xn = xhead;xtail
@@ -79,43 +90,48 @@ def splitPos(df_stats, all_df, json_files):
     df_allsplit = []
 
     for df in all_df:
-        df_split = df.copy()
-        df_split.img = df.img
-        df_split.number = df.number
-        df_split.json = df.json
-        
-        xn = np.array([ np.array(xn.split(';'), dtype=float) for xn in df['xn']])
-        df_split['xhead'] = pd.Series( xn[:, 0] )
-        df_split['xtail'] = pd.Series( xn[:, 1] )
-        yn = np.array([ np.array(yn.split(';'), dtype=float) for yn in df['yn']])
-        df_split['yhead'] = pd.Series( yn[:, 0] )
-        df_split['ytail'] = pd.Series( yn[:, 1] )
-        
-        if 'xn' in df_split.columns and 'yn' in df_split.columns:
-            df_split.drop(['xn', 'yn'], axis = 1, inplace=True)
-            
-        # add average position ((pos_head + pos_tail) / 2) column
-        df_split['x_av'] = (df_split['xhead'] + df_split['xtail']) / 2
-        df_split['y_av'] = (df_split['yhead'] + df_split['ytail']) / 2
+        df_split = df[1].copy()
+        df_split.img = df[1].img
+        df_split.json = df[1].json
         
         
+        if not df[1].empty:  
+            xn = np.array([ np.array(xn.split(';'), dtype=float) for xn in df[1]['xn']])
+            df_split['xhead'] = pd.Series( xn[:, 0] )
+            df_split['xtail'] = pd.Series( xn[:, 1] )
+            yn = np.array([ np.array(yn.split(';'), dtype=float) for yn in df[1]['yn']])
+            df_split['yhead'] = pd.Series( yn[:, 0] )
+            df_split['ytail'] = pd.Series( yn[:, 1] )
 
-        # add length column
-        df_split['len'] = np.sqrt(np.power(df_split['xhead'] - df_split['xtail'], 2) + np.power(df_split['yhead']- df_split['ytail'], 2))
+            if 'xn' in df_split.columns and 'yn' in df_split.columns:
+                df_split.drop(['xn', 'yn'], axis = 1, inplace=True)
 
-        df_split['dir_rad'] = np.arctan2((df_split['yhead']- df_split['ytail']), (df_split['xhead'] - df_split['xtail']))
-        #print(df_split.head(1))
-        
-#         print(df_split.number)
+            # add average position ((pos_head + pos_tail) / 2) column
+            df_split['x_av'] = (df_split['xhead'] + df_split['xtail']) / 2
+            df_split['y_av'] = (df_split['yhead'] + df_split['ytail']) / 2
 
-        df_allsplit.append(df_split)
+
+            # add length column
+            df_split['len'] = np.sqrt(np.power(df_split['xhead'] - df_split['xtail'], 2) + np.power(df_split['yhead']- df_split['ytail'], 2))
+
+            df_split['dir_rad'] = np.arctan2((df_split['yhead']- df_split['ytail']), (df_split['xhead'] - df_split['xtail']))
+
+
+        df_allsplit.append((df[0],df_split))
         
         
-    assert(len(df_allsplit) == len(json_files))
+    assert(len(df_allsplit) == len(all_imgnames))
     
     return df_allsplit
 
+
 def calc_neighbors(df_split):
+    
+    df_split = df_split[1]
+    
+    # skip empty df
+    if df_split.empty: return
+
     df_pos_av = df_split[['x_av', 'y_av']]
 
     dist_m = distance_matrix(df_pos_av, df_pos_av)
@@ -153,9 +169,7 @@ def calc_neighbors(df_split):
         avg_lenght_f2 = df_class_group_length["fish_2"]
         dist_2_f2_BL = avg_lenght_f2 * 2
     
-    print(f"{df_split.number}:   total avg 2BL: {dist2BL:.5f} , total avg 4BL: {dist4BL:.5f}, f1 avg 2BL: {dist_2_f1_BL:.5f}, f2 avg 2BL: {dist_2_f2_BL:.5f} ")
-
-
+    print(f"{df_split.img}:   total avg 2BL: {dist2BL:.5f} , total avg 4BL: {dist4BL:.5f}, f1 avg 2BL: {dist_2_f1_BL:.5f}, f2 avg 2BL: {dist_2_f2_BL:.5f} ")
     
     #neighbors in distance total BL2
     df_dist_m_2 = df_dist_m[df_dist_m < dist2BL]
@@ -241,20 +255,12 @@ def calc_neighbors(df_split):
     return df_split
     
 def calc_all_neighbors(df_allsplit, json_files, all_imgdir):
-    
-    #get all numbers
-    data_numbers = []
-#     for json in json_files:
-#         imgpath, number = get_imgpath_for_json(json, all_imgdir)
-        
-#         data_numbers.append(number)
-        
-    for i, df_split in enumerate(tqdm_notebook(df_allsplit)):
-        img_number = df_split.number
-        data_numbers.append(img_number)
+    #get all numbers        
+    for i, df_split in enumerate(df_allsplit):
         calc_neighbors(df_split)
-    return df_allsplit, data_numbers
+    return df_allsplit
         
+
 #### Find path of image linked to json  
 # this only works with this format: IMG_XXXX_annotations_al.json and IMG_XXXX.jpg
 def get_imgpath_for_json(filename, all_imgdir):
@@ -274,6 +280,9 @@ def get_imgpath_for_json(filename, all_imgdir):
     return imgpath, number
 
 def calc_class_neighbors(df_split):
+    
+    # skip empty df
+    if df_split.empty: return
     
     # get classes of neighbors
     neighbor_list_f = []
@@ -430,8 +439,8 @@ def calc_class_neighbors(df_split):
     df_split['#neighbors_f2BL2_f3'] = neighbor_numbers_f3
 
 def all_calc_class_neighbours(df_allsplit):
-    for df_split in tqdm_notebook(df_allsplit):
-        calc_class_neighbors(df_split)
+    for df_split in df_allsplit:
+        calc_class_neighbors(df_split[1])
     return df_allsplit
 
 def nb_stats_calculations(df_allsplit, df_stats):
@@ -448,6 +457,16 @@ def nb_stats_calculations(df_allsplit, df_stats):
     mean_nnd = []
     
     for i, df_split in enumerate(df_allsplit):
+        df_split = df_split[1]
+        if df_split.empty: 
+            mean_length_f1.append(np.nan)
+            mean_length_f2.append(np.nan)
+            mean_length_f3.append(np.nan)
+            av2_degree.append(np.nan)
+            av2_density.append(np.nan)
+            mean_nnd.append(np.nan)
+            continue
+        
         lengths_f1 = []
         lengths_f2 = []
         lengths_f3 = []
@@ -478,6 +497,12 @@ def nb_stats_calculations(df_allsplit, df_stats):
         av2_density.append(mean_degree_BL2/av2_num_total if av2_num_total != 0 else 0)
         
         mean_nnd.append(np.mean(df_split["nnd_px"]))
+        
+    df_stats["meanNND_total"] = mean_nnd
+      
+    df_stats["meanBL_px_f1"] = mean_length_f1
+    df_stats["meanBL_px_f2"] = mean_length_f2
+    df_stats["meanBL_px_f3"] = mean_length_f3
     
     ##############################################################################
     ################################ Distance BL2 ################################
@@ -498,7 +523,24 @@ def nb_stats_calculations(df_allsplit, df_stats):
     _2f2BL_avg_f2f2_n = []
     
     for i, df_split in enumerate(df_allsplit):
+        df_split = df_split[1]
+        if df_split.empty: 
+            av2_allf_same.append(np.nan)
+            av2_allf2_same.append(np.nan)
+            av2_allf3_same.append(np.nan)
 
+            av2_avg_total_n.append(np.nan)
+            av2_avg_ff_n.append(np.nan)
+            av2_avg_f2f2_n.append(np.nan)
+            av2_avg_f3f3_n.append(np.nan)
+
+
+            _2f1BL_allf_same.append(np.nan)
+            _2f2BL_allf2_same.append(np.nan)
+            _2f1BL_avg_ff_n.append(np.nan)
+            _2f2BL_avg_f2f2_n.append(np.nan)
+            continue
+        
         av2_p_f_same = 0
         av2_p_f2_same = 0
         av2_p_f3_same = 0
@@ -585,12 +627,6 @@ def nb_stats_calculations(df_allsplit, df_stats):
     
     df_stats["meanDegree_per2BL_total"] = av2_degree
     df_stats["meanDensity_per2BL_total"] = av2_density
-    
-    df_stats["meanNND_total"] = mean_nnd
-                              
-    df_stats["meanBL_px_f1"] = mean_length_f1
-    df_stats["meanBL_px_f2"] = mean_length_f2
-    df_stats["meanBL_px_f3"] = mean_length_f3
 
     
     ##############################################################################
@@ -607,7 +643,18 @@ def nb_stats_calculations(df_allsplit, df_stats):
     av4_avg_f3f3_n = []
 
     for i, df_split in enumerate(df_allsplit):
+        df_split = df_split[1]
+        if df_split.empty: 
+            av4_allf_same.append(np.nan)
+            av4_allf2_same.append(np.nan)
+            av4_allf3_same.append(np.nan)
 
+            av4_avg_total_n.append(np.nan)
+            av4_avg_ff_n.append(np.nan)
+            av4_avg_f2f2_n.append(np.nan)
+            av4_avg_f3f3_n.append(np.nan)
+            continue
+        
         av4_p_f_same = 0
         av4_p_f2_same = 0
         av4_p_f3_same = 0
@@ -696,7 +743,15 @@ def pop_stats_pol_dir_len(df_allsplit, df_stats):
     all_avg_dir = []
     all_pol = []
     all_pol_error = []
-    for idf, df_split in enumerate(tqdm_notebook(df_allsplit)):
+    for idf, df_split in enumerate(df_allsplit):
+        df_split = df_split[1]
+        if df_split.empty: 
+            all_avg_len_total.append(np.nan)
+            all_avg_dir.append(np.nan)
+            all_pol.append(np.nan)
+            all_pol_error.append(np.nan)
+            continue
+        
         all_avg_len_total.append(df_split['len'].mean())
 
         #dir
@@ -720,7 +775,7 @@ def pop_stats_pol_dir_len(df_allsplit, df_stats):
 
 def neighbor_calculations(df_allsplit, df_stats, json_files, all_imgdir):
     # calculate neighbors for all datasets
-    df_allsplit, data_numbers = calc_all_neighbors(df_allsplit, json_files, all_imgdir)
+    df_allsplit = calc_all_neighbors(df_allsplit, json_files, all_imgdir)
 
     # calc class neighbors for all datasets
     df_allsplit = all_calc_class_neighbours(df_allsplit)
@@ -728,4 +783,4 @@ def neighbor_calculations(df_allsplit, df_stats, json_files, all_imgdir):
     # add same class neighbors percentage, average number of neighbors (per class and total), density, mean nnd and degree to stats
     df_stats = nb_stats_calculations(df_allsplit, df_stats)
     
-    return df_allsplit, df_stats, data_numbers
+    return df_allsplit, df_stats
